@@ -162,5 +162,15 @@
   "连接超时，请检查代理地址/端口或代理是否可用（耗时 {0}ms）": "Connection timed out. Check the proxy address, port and availability ({0} ms).",
   "无法解析代理地址，请检查主机名（耗时 {0}ms）": "Could not resolve the proxy address. Check the hostname ({0} ms).",
   "代理需要认证，请填写用户名与密码（耗时 {0}ms）": "The proxy requires authentication. Enter its username and password ({0} ms).",
-  "已将 {0} 集加入下载队列": "Queued {0} episodes"
+  "已将 {0} 集加入下载队列": "Queued {0} episodes",
+  "合并整部剧 (排队 {0})": "Merge series ({0} queued)",
+  "{0} 秒后排队": "Queues in {0}s",
+  "{0} 分钟后排队 ({1})": "Queues in {0}m ({1})",
+  "智能快速合并 ({0}部)": "Smart fast merge ({0})",
+  "已将《{0}》加入合并排队队列，前序任务完成后自动开始（共 {1} 集）": "Queued “{0}” for merge ({1} episodes); starts automatically after previous tasks",
+  "合并任务创建失败：{0}": "Failed to create merge tasks: {0}",
+  "已启动 1 部短剧合并，已排队 {0} 部，执行完将自动依次处理": "Started 1 merge and queued {0} more; next begins automatically when the previous finishes.",
+  "已开始合并 {0} 部短剧": "Started merging {0} dramas.",
+  "已将 {0} 部短剧加入合并队列，前序任务完成后自动依次执行": "Queued {0} dramas for merge; they will run in sequence automatically.",
+  "部分短剧未能加入：{0}": "Some dramas could not be queued: {0}"
 }
