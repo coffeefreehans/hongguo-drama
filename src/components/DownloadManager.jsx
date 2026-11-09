@@ -72,6 +72,8 @@ function DownloadManager({ onNavigate, active = true }) {
   const [page, setPage] = useState(1);
   const [orderVersion, setOrderVersion] = useState(0);
   const [loadError, setLoadError] = useState('');
+  const [selectedMergeSeries, setSelectedMergeSeries] = useState(new Set());
+  const [now, setNow] = useState(Date.now());
   const toastTimerRef = useRef(null);
   const moreActionsRef = useRef(null);
   const mergeRequestRef = useRef(false);
@@ -146,6 +148,9 @@ function DownloadManager({ onNavigate, active = true }) {
     mergeDialogGenerationRef.current += 1;
     setMergeAsk(false);
     setMergeError('');
+    if (mergeSeriesId) {
+      setSelectedMergeSeries(new Set([String(mergeSeriesId)]));
+    }
   }, [mergeSeriesId]);
 
   const loadMergeTasks = useCallback(async () => {
@@ -229,7 +234,11 @@ function DownloadManager({ onNavigate, active = true }) {
       }),
       window.electronAPI.onMergeFailed((data) => {
         loadMergeTasks();
-        showToast('合并失败：' + (data.error || '未知错误'), 'error');
+        if (data.error === '已取消') {
+          showToast('合并任务已取消', 'info');
+        } else {
+          showToast('合并失败：' + (data.error || '未知错误'), 'error');
+        }
       }),
     ];
     const timer = setInterval(() => {
@@ -315,6 +324,21 @@ function DownloadManager({ onNavigate, active = true }) {
   const openMergeDialog = () => {
     mergeDialogGenerationRef.current += 1;
     setMergeError('');
+    const queuedSet = new Set(
+      mergeTasks.filter(t => t.status === 'running' || t.status === 'pending').map(t => String(t.seriesId))
+    );
+    const initial = new Set();
+    if (mergeSeriesId && !queuedSet.has(String(mergeSeriesId))) {
+      initial.add(String(mergeSeriesId));
+    } else {
+      const firstAvailable = seriesList.find(s => !queuedSet.has(String(s.series_id)));
+      if (firstAvailable) {
+        initial.add(String(firstAvailable.series_id));
+      } else if (mergeSeriesId) {
+        initial.add(String(mergeSeriesId));
+      }
+    }
+    setSelectedMergeSeries(initial);
     setMergeAsk(true);
   };
 
@@ -326,8 +350,24 @@ function DownloadManager({ onNavigate, active = true }) {
 
   const doMerge = async (compatible, require1080 = false) => {
     if (mergeRequestRef.current) return;
-    if (!mergeSeriesId) {
-      showToast('请先选择要合并的短剧', 'error');
+    const targetId = selectedMergeSeries.size === 1
+      ? selectedMergeSeries.values().next().value
+      : (mergeSeriesId || (seriesList[0] && String(seriesList[0].series_id)));
+    const toMerge = selectedMergeSeries.size > 0 ? Array.from(selectedMergeSeries) : (targetId ? [targetId] : []);
+    if (!toMerge.length) {
+      setMergeError('请至少勾选一部要合并的短剧');
+      return;
+    }
+    const queuedSet = new Set(
+      mergeTasks.filter(t => t.status === 'running' || t.status === 'pending').map(t => String(t.seriesId))
+    );
+    const unqueuedToMerge = toMerge.filter(sid => !queuedSet.has(String(sid)));
+    if (!unqueuedToMerge.length) {
+      if (toMerge.length > 0) {
+        setMergeError('所选短剧已有合并任务正在进行或排队中');
+      } else {
+        setMergeError('请至少勾选一部要合并的短剧');
+      }
       return;
     }
     mergeRequestRef.current = true;
@@ -336,22 +376,70 @@ function DownloadManager({ onNavigate, active = true }) {
     setMergeError('');
     try {
       const options = require1080 ? { compatible: false, require1080: true } : { compatible };
-      const res = await window.electronAPI.mergeSeries(mergeSeriesId, '', options);
-      if (dialogGeneration !== mergeDialogGenerationRef.current) return;
-      if (!res || !res.success) {
-        setMergeError((res && res.error) || '合并失败');
-        return;
+      if (unqueuedToMerge.length === 1) {
+        const sid = unqueuedToMerge[0];
+        const res = await window.electronAPI.mergeSeries(sid, '', options);
+        if (dialogGeneration !== mergeDialogGenerationRef.current) return;
+        if (!res || !res.success) {
+          setMergeError((res && res.error) || '合并失败');
+          return;
+        }
+        closeMergeDialog();
+        await loadMergeTasks();
+        const seriesTitle = seriesList.find(s => String(s.series_id) === String(sid))?.series_title || '短剧';
+        const sizeGb = (res.totalBytes / 1073741824).toFixed(2);
+        const duration = res.totalDuration > 0 ? ` / ${fmtElapsed(res.totalDuration)}` : ' / 时长待探测';
+        if (res.status === 'pending') {
+          showToast(`已将《${seriesTitle}》加入合并排队队列，前序任务完成后自动开始（共 ${res.count} 集）`);
+        } else {
+          showToast(compatible
+            ? `开始兼容格式合并 ${res.count} 集（H.264，耗时较长）`
+            : require1080
+            ? `开始高质量分辨率合并 ${res.count} 集`
+            : `开始合并 ${res.count} 集（约 ${sizeGb} GB${duration}）`);
+        }
+        if (res.codecWarning) showToast(res.codecWarning, 'error');
+      } else {
+        let started = 0;
+        let queued = 0;
+        const errors = [];
+        for (const sid of unqueuedToMerge) {
+          if (dialogGeneration !== mergeDialogGenerationRef.current) break;
+          try {
+            const res = await window.electronAPI.mergeSeries(sid, '', options);
+            if (res && res.success) {
+              if (res.status === 'running') started++;
+              else queued++;
+            } else if (res && res.error) {
+              errors.push(res.error);
+            }
+          } catch (err) {
+            errors.push(err.message);
+          }
+        }
+        if (dialogGeneration !== mergeDialogGenerationRef.current) return;
+        if (errors.length > 0 && started === 0 && queued === 0) {
+          setMergeError(`合并任务创建失败：${errors.join('；')}`);
+          return;
+        }
+        closeMergeDialog();
+        await loadMergeTasks();
+        const total = started + queued;
+        let msg = '';
+        if (started > 0 && queued > 0) {
+          msg = `已启动 1 部短剧合并，已排队 ${queued} 部，执行完将自动依次处理`;
+        } else if (started > 0) {
+          msg = `已开始合并 ${total} 部短剧`;
+        } else {
+          msg = `已将 ${queued} 部短剧加入合并队列，前序任务完成后自动依次执行`;
+        }
+        showToast(msg, 'success');
+        if (errors.length > 0) {
+          setTimeout(() => {
+            showToast(`部分短剧未能加入：${errors.join('；')}`, 'error');
+          }, 3500);
+        }
       }
-      closeMergeDialog();
-      await loadMergeTasks();
-      const sizeGb = (res.totalBytes / 1073741824).toFixed(2);
-      const duration = res.totalDuration > 0 ? ` / ${fmtElapsed(res.totalDuration)}` : ' / 时长待探测';
-      showToast(compatible
-        ? `开始兼容格式合并 ${res.count} 集（H.264，耗时较长）`
-        : require1080
-        ? `开始高质量分辨率合并 ${res.count} 集`
-        : `开始合并 ${res.count} 集（约 ${sizeGb} GB${duration}）`);
-      if (res.codecWarning) showToast(res.codecWarning, 'error');
     } catch (e) {
       if (dialogGeneration === mergeDialogGenerationRef.current) setMergeError('合并异常: ' + e.message);
     } finally {
@@ -445,11 +533,17 @@ function DownloadManager({ onNavigate, active = true }) {
   const activeCount = tasks.filter((t) => t.status === 'downloading' || t.status === 'pending').length;
   const completedCount = tasks.filter((t) => t.status === 'completed').length;
   const retryingCount = tasks.filter(isWaitingRetry).length;
+  useEffect(() => {
+    if (!active || retryingCount === 0) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [active, retryingCount > 0]);
   const failedTasks = useMemo(
     () => tasks.filter(needsManualRetry),
     [tasks]
   );
   const failedCount = failedTasks.length;
+  const activeMergeCount = mergeTasks.filter((t) => t.status === 'running' || t.status === 'pending').length;
 
   // 可暂停的任务：正在下载、等待中、已停止（未跑完的都算）
   const pausableCount = useMemo(
@@ -484,7 +578,7 @@ function DownloadManager({ onNavigate, active = true }) {
       </div>
 
       <div className="dm-usage-notice" role="note" aria-label="下载风险与使用倡议">
-        <p><strong>临时故障会自动重试。</strong>红果片源下载遇到断网、超时或传输不完整时，最多追加 3 次重试，分别等待 10、30、60 秒；取源暂不可用时等待 3、8、15 分钟。等待期间可停止或立即重试。权限限制、磁盘错误等需手动处理；重试后仍失败的任务会保留。</p>
+        <p><strong>失败下载会自动重试。</strong>分集下载遇到网络波动、超时或异常时，可在设置中自定义自动重试间隔（默认 600 秒 / 十分钟）；等待期间可手动停止或立即重试。权限限制、磁盘空间不足等需手动处理。</p>
         <p>本软件用于学习研究，建议体验后 24 小时内自行删除；请勿冒充官方或以虚假授权名义收费。开源权利义务以 GPLv3 为准。上述倡议不代表获得平台或版权方授权，也不构成免责承诺。</p>
       </div>
 
@@ -562,15 +656,30 @@ function DownloadManager({ onNavigate, active = true }) {
               onChange={(e) => setMergeSeriesId(e.target.value)}
               title="选择要合并的短剧"
             >
-              {seriesList.map((s) => (
-                <option key={s.series_id} value={String(s.series_id)}>
-                  {s.series_title}
-                </option>
-              ))}
+              {seriesList.map((s) => {
+                const sid = String(s.series_id);
+                const isRunning = mergeTasks.some(t => String(t.seriesId) === sid && t.status === 'running');
+                const isPending = mergeTasks.some(t => String(t.seriesId) === sid && t.status === 'pending');
+                const badge = isRunning ? ' (合并中)' : (isPending ? ' (排队中)' : '');
+                return (
+                  <option key={s.series_id} value={sid}>
+                    {s.series_title}{badge}
+                  </option>
+                );
+              })}
             </select>
-            <button className="btn btn-outline" onClick={openMergeDialog} disabled={merging} title="把该剧已下载的分集合并成单个 mp4">
+            <button
+              className="btn btn-outline"
+              onClick={openMergeDialog}
+              title="把短剧已下载的分集合并成单个 mp4，支持多选排队"
+            >
               <Layers size={15} />
-              {merging ? '合并中...' : '合并整部剧'}
+              {merging ? '合并中...' : (
+                (() => {
+                  const pendingCount = mergeTasks.filter(t => t.status === 'pending').length;
+                  return pendingCount > 0 ? `合并整部剧 (排队 ${pendingCount})` : '合并整部剧';
+                })()
+              )}
             </button>
           </div>
         )}
@@ -582,7 +691,7 @@ function DownloadManager({ onNavigate, active = true }) {
         )}
       </div>
 
-      {seriesList.length > 0 && <p className="settings-hint dm-merge-hint">选择剧名后点“合并整部剧”，导出该剧全部已下载分集，无需勾选任务。</p>}
+      {seriesList.length > 0 && <p className="settings-hint dm-merge-hint">选择剧名后点“合并整部剧”，导出该剧全部已下载分集，无需勾选任务；支持多选自动排队依次合并。</p>}
 
       {/* 合并任务 */}
       {mergeTasks.length > 0 && (
@@ -596,6 +705,7 @@ function DownloadManager({ onNavigate, active = true }) {
                 </div>
                 <div className="merge-sub">
                   {m.status === 'running' && <>{m.stageText || '正在合并'}{m.method && m.method !== m.stageText ? ` · ${m.method}` : ''}</>}
+                  {m.status === 'pending' && <span className="status-tag status-pending">排队等待合并 · 前序任务完成后自动开始</span>}
                   {m.status === 'completed' && (
                     <>
                       已完成 · {m.outputName}
@@ -606,10 +716,19 @@ function DownloadManager({ onNavigate, active = true }) {
                   {m.status === 'stopped' && <>{m.error || '已取消'}</>}
                 </div>
                 <div className="merge-metrics">
-                  <span>{m.stage === 'checking' ? `已检查 ${m.checked || 0}` : `已处理 ${m.done || 0}`} / {m.total} 集</span>
-                  <span>用时 {fmtElapsed(m.status === 'running' ? (Date.now() - m.startTime) / 1000 : m.elapsedSeconds || ((m.endTime || m.startTime) - m.startTime) / 1000)}</span>
-                  {m.status === 'running' && m.speed > 0 && <span>{m.speed.toFixed(1)} 倍速</span>}
-                  {m.status === 'running' && Number.isFinite(m.etaSeconds) && <span>本阶段约剩 {fmtElapsed(m.etaSeconds)}</span>}
+                  {m.status === 'pending' ? (
+                    <>
+                      <span>共 {m.total} 集</span>
+                      <span>排队等待中</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>{m.stage === 'checking' ? `已检查 ${m.checked || 0}` : `已处理 ${m.done || 0}`} / {m.total} 集</span>
+                      <span>用时 {fmtElapsed(m.status === 'running' ? (Date.now() - m.startTime) / 1000 : m.elapsedSeconds || ((m.endTime || m.startTime) - m.startTime) / 1000)}</span>
+                      {m.status === 'running' && m.speed > 0 && <span>{m.speed.toFixed(1)} 倍速</span>}
+                      {m.status === 'running' && Number.isFinite(m.etaSeconds) && <span>本阶段约剩 {fmtElapsed(m.etaSeconds)}</span>}
+                    </>
+                  )}
                 </div>
                 {(m.codecWarning || m.storageWarning || m.cleanupWarning) && <div className="merge-note">{m.storageWarning || m.cleanupWarning || m.codecWarning}</div>}
                 {(m.status === 'running') && (
@@ -622,8 +741,8 @@ function DownloadManager({ onNavigate, active = true }) {
                 )}
               </div>
               <div className="merge-actions">
-                {m.status === 'running' && (
-                  <button className="icon-btn" title="取消合并" onClick={() => cancelMerge(m.id)}>
+                {(m.status === 'running' || m.status === 'pending') && (
+                  <button className="icon-btn" title={m.status === 'pending' ? '取消排队' : '取消合并'} onClick={() => cancelMerge(m.id)}>
                     <X size={16} />
                   </button>
                 )}
@@ -632,7 +751,7 @@ function DownloadManager({ onNavigate, active = true }) {
                     <Folder size={16} />
                   </button>
                 )}
-                {m.status !== 'running' && (
+                {m.status !== 'running' && m.status !== 'pending' && (
                   <button
                     className="icon-btn icon-btn-danger"
                     title="移除记录"
@@ -723,7 +842,16 @@ function DownloadManager({ onNavigate, active = true }) {
                   <div className="dm-task-title">{task.title || task.filename}</div>
                   <div className="dm-task-meta">
                     <span className={`status-tag status-${waitingRetry ? 'pending' : task.status}`}>{waitingRetry ? '等待重试' : STATUS_TEXT[task.status] || task.status}</span>
-                    {waitingRetry && <span className="dm-size">自动重试 {task.sourceRetries}/3 · {new Date(task.retryAt).toLocaleTimeString('zh-CN', { hour12: false })} 后排队</span>}
+                    {waitingRetry && (
+                      <span className="dm-size">
+                        自动重试 {task.sourceRetries ? `${task.sourceRetries}/3 · ` : ''}
+                        {task.retryAt > now
+                          ? (task.retryAt - now <= 60000
+                              ? `${Math.max(1, Math.ceil((task.retryAt - now) / 1000))} 秒后排队`
+                              : `${Math.ceil((task.retryAt - now) / 60000)} 分钟后排队 (${new Date(task.retryAt).toLocaleTimeString('zh-CN', { hour12: false })})`)
+                          : '即将排队'}
+                      </span>
+                    )}
                     {task.status === 'downloading' && task.totalBytes > 0 && (
                       <span className="dm-size">{fmtBytes(task.receivedBytes)} / {fmtBytes(task.totalBytes)}</span>
                     )}
@@ -788,16 +916,71 @@ function DownloadManager({ onNavigate, active = true }) {
         </div>
       )}
 
-      {/* 合并格式选择 */}
+      {/* 合并格式选择与多剧选择 */}
       {mergeAsk && (
         <div className="player-confirm-mask" onClick={closeMergeDialog}>
-          <div className="player-confirm" role="dialog" aria-modal="true" aria-label={confirmAsk ? confirmAsk.title : '合并导出'} tabIndex={-1} onClick={(e) => e.stopPropagation()}>
+          <div className="player-confirm dm-merge-dialog" role="dialog" aria-modal="true" aria-label={confirmAsk ? confirmAsk.title : '合并导出'} tabIndex={-1} onClick={(e) => e.stopPropagation()}>
             <div className="player-confirm-title" style={{ color: 'var(--accent)' }}>
               <Layers size={17} />
               合并整部剧
             </div>
             <div className="player-confirm-msg">
-              <p>将《{seriesList.find((series) => String(series.series_id) === mergeSeriesId)?.series_title || '所选短剧'}》的全部已下载分集合并为一个 mp4。未下载的分集不会自动补齐。</p>
+              {seriesList.length > 1 && (
+                <div className="merge-series-selector">
+                  <div className="merge-series-header">
+                    <span>选择要合并的短剧（已选 <b>{selectedMergeSeries.size}</b> 部，支持多选排队）：</span>
+                    <div className="merge-select-actions">
+                      <button
+                        type="button"
+                        className="dm-link-btn"
+                        onClick={() => {
+                          const queuedSet = new Set(mergeTasks.filter(t => t.status === 'running' || t.status === 'pending').map(t => String(t.seriesId)));
+                          const unqueued = seriesList.filter(s => !queuedSet.has(String(s.series_id))).map(s => String(s.series_id));
+                          setSelectedMergeSeries(new Set(unqueued));
+                        }}
+                      >
+                        全选
+                      </button>
+                      <button
+                        type="button"
+                        className="dm-link-btn"
+                        onClick={() => setSelectedMergeSeries(new Set())}
+                      >
+                        清空
+                      </button>
+                    </div>
+                  </div>
+                  <div className="merge-series-list">
+                    {seriesList.map((s) => {
+                      const sid = String(s.series_id);
+                      const isChecked = selectedMergeSeries.has(sid);
+                      const isQueued = mergeTasks.some(t => String(t.seriesId) === sid && (t.status === 'running' || t.status === 'pending'));
+                      return (
+                        <label key={sid} className={`merge-series-item ${isQueued ? 'merge-series-item-queued' : ''}`}>
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            disabled={isQueued}
+                            onChange={(e) => {
+                              const next = new Set(selectedMergeSeries);
+                              if (e.target.checked) next.add(sid);
+                              else next.delete(sid);
+                              setSelectedMergeSeries(next);
+                            }}
+                          />
+                          <span className="merge-series-item-title">《{s.series_title}》</span>
+                          {isQueued && <span className="status-tag status-pending">进行/排队中</span>}
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              {selectedMergeSeries.size > 1 ? (
+                <p>将所选的 <b>{selectedMergeSeries.size}</b> 部短剧依次排队合并为各自的完整 mp4，前一部合并完自动执行下一部。未下载的分集不会自动补齐。</p>
+              ) : (
+                <p>将《{seriesList.find((series) => String(series.series_id) === (selectedMergeSeries.values().next().value || mergeSeriesId))?.series_title || '所选短剧'}》的全部已下载分集合并为一个 mp4。未下载的分集不会自动补齐。</p>
+              )}
               <p><b>高质量分辨率合并</b>：逐集检查实际文件，全部达到1080P才能开始；有低清分集请选快速或兼容合并。</p>
               <p><b>快速合并</b>：优先无损拼接，保留每段原分辨率，部分设备可能不兼容。</p>
               <p><b>兼容合并</b>：必要时转为H.264/AAC，仍保留每段原分辨率，处理较慢。</p>
@@ -813,7 +996,7 @@ function DownloadManager({ onNavigate, active = true }) {
                 兼容合并（H.264）
               </button>
               <button className="btn btn-primary" onClick={() => doMerge(false)} disabled={merging}>
-                智能快速合并
+                {selectedMergeSeries.size > 1 ? `智能快速合并 (${selectedMergeSeries.size}部)` : '智能快速合并'}
               </button>
             </div>
           </div>

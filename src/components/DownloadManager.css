@@ -170,6 +170,12 @@
   background: var(--danger-bg);
 }
 
+.merge-pending {
+  border-color: var(--border-color);
+  background: var(--bg-card);
+  opacity: 0.92;
+}
+
 .merge-body {
   flex: 1;
   min-width: 0;
@@ -211,6 +217,83 @@
   color: var(--text-secondary);
   font-size: 12px;
   overflow-wrap: anywhere;
+}
+
+/* 合并整部剧弹窗样式 */
+.dm-merge-dialog {
+  max-width: 520px;
+}
+
+.merge-series-selector {
+  margin: 10px 0 14px 0;
+  text-align: left;
+}
+
+.merge-series-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+
+.merge-select-actions {
+  display: flex;
+  gap: 12px;
+}
+
+.dm-link-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.dm-link-btn:hover {
+  opacity: 0.8;
+}
+
+.merge-series-list {
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius);
+  background: var(--bg-inset);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.merge-series-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 5px 8px;
+  border-radius: 4px;
+}
+
+.merge-series-item:hover {
+  background: var(--bg-card);
+}
+
+.merge-series-item-queued {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.merge-series-item-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 删除确认里的勾选项 */

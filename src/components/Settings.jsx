@@ -70,7 +70,7 @@ function SettingsPage({ active = true, preview = false, appInfo = null }) {
 
   const loadSettings = async () => {
     setLoadError('');
-    try { setSettings({ download_quality: 'auto', picture_in_picture_mode: 'custom', ...await window.electronAPI.getSettings() }); }
+    try { setSettings({ download_quality: 'auto', picture_in_picture_mode: 'custom', auto_retry_interval: 600, ...await window.electronAPI.getSettings() }); }
     catch (error) { setLoadError(error.message || '设置加载失败，请重试'); }
   };
 
@@ -79,7 +79,7 @@ function SettingsPage({ active = true, preview = false, appInfo = null }) {
     if (savingRef.current) return;
     const modeVersion = pictureModeRequest.current.version;
     try {
-      const fresh = { download_quality: 'auto', picture_in_picture_mode: 'custom', ...await window.electronAPI.getSettings() };
+      const fresh = { download_quality: 'auto', picture_in_picture_mode: 'custom', auto_retry_interval: 600, ...await window.electronAPI.getSettings() };
       setSettings(prev => {
         if (!prev) return fresh;
         const merged = { ...fresh };
@@ -157,7 +157,7 @@ function SettingsPage({ active = true, preview = false, appInfo = null }) {
     setSaveError('');
     try {
       // Submit only edited fields; the main process merges newer playback options.
-      const editable = ['root', 'name_format', 'download_quality', 'download_metadata', 'cache_next_episode', 'compat_mode', 'auto_delete_watched', 'show_danmaku_controls', 'max_concurrent', 'proxy_enabled', 'proxy_mode', 'proxy_host', 'proxy_port', 'proxy_username', 'proxy_password', 'watch_updates_enabled', 'watch_sequels_enabled', 'watch_notifications_enabled', 'search_app_enabled', 'app_updates_enabled'];
+      const editable = ['root', 'name_format', 'download_quality', 'download_metadata', 'cache_next_episode', 'compat_mode', 'auto_delete_watched', 'show_danmaku_controls', 'max_concurrent', 'auto_retry_interval', 'proxy_enabled', 'proxy_mode', 'proxy_host', 'proxy_port', 'proxy_username', 'proxy_password', 'watch_updates_enabled', 'watch_sequels_enabled', 'watch_notifications_enabled', 'search_app_enabled', 'app_updates_enabled'];
       const submitted = {};
       for (const key of editable) {
         if (Object.hasOwn(next, key) && (editedKeys.current.has(key) || isProxy && key.startsWith('proxy_'))) submitted[key] = next[key];
@@ -368,6 +368,48 @@ function SettingsPage({ active = true, preview = false, appInfo = null }) {
           <p className="settings-hint">
             同时下载 <b>{settings.max_concurrent || 3}</b> 集（保存后立即生效）。
             并发越高越快，但可能触发接口限流，建议 3~5。
+          </p>
+        </div>
+
+        <div className="settings-group">
+          <label className="settings-label" htmlFor="auto-retry-interval">失败下载自动重试时间</label>
+          <div className="preset-row">
+            {[
+              { label: '关闭', value: 0 },
+              { label: '60 秒 (1分钟)', value: 60 },
+              { label: '300 秒 (5分钟)', value: 300 },
+              { label: '600 秒 (10分钟·默认)', value: 600 },
+              { label: '1800 秒 (30分钟)', value: 1800 },
+            ].map((p) => (
+              <button
+                key={p.value}
+                type="button"
+                className={`btn-chip ${Number(settings.auto_retry_interval ?? 600) === p.value ? 'btn-chip-primary' : ''}`}
+                onClick={() => update('auto_retry_interval', p.value)}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+          <div className="folder-row" style={{ maxWidth: 220, marginTop: 4 }}>
+            <input
+              id="auto-retry-interval"
+              type="number"
+              min="0"
+              max="86400"
+              className="input-field"
+              aria-label="失败下载自动重试时间（秒）"
+              value={settings.auto_retry_interval ?? 600}
+              onChange={(e) => {
+                const val = parseInt(e.target.value, 10);
+                update('auto_retry_interval', isNaN(val) ? '' : Math.max(0, val));
+              }}
+              placeholder="600"
+            />
+            <span style={{ alignSelf: 'center', fontSize: 13, color: 'var(--text-secondary)' }}>秒</span>
+          </div>
+          <p className="settings-hint">
+            分集下载遇到异常或失败时自动重新排队下载的等待时间，默认 <b>600</b> 秒（10 分钟）。设为 0 关闭自动重试。
           </p>
         </div>
 
